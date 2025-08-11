@@ -126,7 +126,7 @@ if user_question := st.chat_input("Qual é a sua dúvida?"):
         docs = new_db.similarity_search(user_question)
         context = "\n".join([doc.page_content for doc in docs])
         
-        model = get_ conversational_chain()
+        model = get_conversational_chain()
         # O prompt já está dentro da função, então passamos o contexto e a pergunta
         prompt_completo = model.prompt_template.format(context=context, question=user_question)
         response = model.generate_content(prompt_completo)

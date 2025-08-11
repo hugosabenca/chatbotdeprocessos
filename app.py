@@ -1,22 +1,28 @@
 import streamlit as st
 import google.generativeai as genai
-import docx
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
+import docx
 import os
 
-# --- Configurações Iniciais e Funções ---
+# --- 1. LEITURA SEGURA DA CHAVE DE API (A MUDANÇA PRINCIPAL) ---
+# O Streamlit lê o "Secret" que configuramos no painel online.
+try:
+    # A linha mais importante: pega a chave do "cofre" do Streamlit Cloud
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    genai.configure(api_key=api_key)
+except (KeyError, FileNotFoundError):
+    st.error("Chave de API do Google não configurada nos 'Secrets' do Streamlit.")
+    st.stop() # Interrompe a execução se a chave não for encontrada
 
-# Configura a página do Streamlit
-st.set_page_config(page_title="Chatbot Dox Brasil", page_icon="🤖")
+# --- Funções Auxiliares (já corrigidas) ---
 
 def get_documents_text(uploaded_files):
     """Extrai o texto de uma lista de arquivos PDF e DOCX."""
     text = ""
     for doc_file in uploaded_files:
-        # Verifica se o arquivo é um DOCX
         if doc_file.name.endswith('.docx'):
             try:
                 doc = docx.Document(doc_file)
@@ -24,8 +30,6 @@ def get_documents_text(uploaded_files):
                     text += para.text + "\n"
             except Exception as e:
                 st.error(f"Erro ao ler o arquivo DOCX {doc_file.name}: {e}")
-        
-        # Verifica se o arquivo é um PDF
         elif doc_file.name.endswith('.pdf'):
             try:
                 pdf_reader = PdfReader(doc_file)
@@ -33,7 +37,6 @@ def get_documents_text(uploaded_files):
                     text += page.extract_text() + "\n"
             except Exception as e:
                 st.error(f"Erro ao ler o arquivo PDF {doc_file.name}: {e}")
-
     return text
 
 def get_text_chunks(text):
@@ -42,23 +45,23 @@ def get_text_chunks(text):
     chunks = text_splitter.split_text(text)
     return chunks
 
-def get_vector_store(text_chunks, api_key):  # <-- 1. Adicionamos o api_key como parâmetro
+def get_vector_store(text_chunks, api_key):
+    """Cria e salva um banco de dados de vetores a partir dos chunks."""
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/embedding-001",
-        google_api_key=api_key  # <-- 2. Passamos a chave diretamente aqui
+        google_api_key=api_key
     )
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
-    return vector_store
-
 
 def get_conversational_chain():
+    """Cria a cadeia de conversação com o modelo e o prompt melhorado."""
     prompt_template = """
-    Assuma a persona de um especialista de processos da [NOME DA SUA EMPRESA]. Você é prestativo,
+    Assuma a persona de um especialista de processos da Dox Brasil Pinheiral. Você é prestativo,
     confiante e responde de forma direta e natural. Aja como se o conhecimento fosse seu, não como se
     estivesse lendo um documento.
 
-    **REGRAS IMPORTANTES:**
+    REGRAS IMPORTANTES:
     1. NUNCA use frases como "com base no contexto", "segundo o documento", "a informação fornecida diz".
     2. Responda diretamente à pergunta do usuário.
     3. Se a informação não estiver disponível, diga de forma natural, como por exemplo: "Não encontrei os detalhes sobre esse processo específico" ou "Essa informação não está no meu escopo de conhecimento".
@@ -77,92 +80,58 @@ def get_conversational_chain():
     model = genai.GenerativeModel('gemini-2.5-pro')
     return model
 
-# --- Interface do Streamlit ---
+# --- Interface Principal do Streamlit ---
 
+st.set_page_config(page_title="Chatbot Dox Brasil", page_icon="🤖")
 st.title("🤖 Chatbot de Processos Dox Brasil Pinheiral")
-st.write("Faça o upload dos seus PDFs e faça perguntas sobre eles!")
+st.write("Faça o upload dos documentos da empresa e faça perguntas sobre eles!")
 
-# Barra lateral para upload e configuração
+# Barra lateral para upload (sem pedir a chave!)
 with st.sidebar:
-    st.header("Configuração")
-    
-    # Input para a chave da API do Google
-    api_key = st.text_input("Sua chave da API do Google Gemini", type="password")
-    if api_key:
-        genai.configure(api_key=api_key)
-
-    # Upload dos arquivos PDF
-    pdf_docs = st.file_uploader("Faça upload dos seus PDFs aqui", accept_multiple_files=True)
-
+    st.header("Documentos")
+    uploaded_files = st.file_uploader("Faça upload dos seus PDFs ou DOCX aqui", accept_multiple_files=True)
     if st.button("Processar Documentos"):
-        if not api_key:
-            st.warning("Por favor, insira sua chave de API do Google.")
-        elif not pdf_docs:
-            st.warning("Por favor, faça o upload de pelo menos um PDF.")
+        if not uploaded_files:
+            st.warning("Por favor, faça o upload de pelo menos um documento.")
         else:
             with st.spinner("Processando..."):
-                raw_text = get_documents_text(pdf_docs) # Agora chamamos a nova função
+                raw_text = get_documents_text(uploaded_files)
                 text_chunks = get_text_chunks(raw_text)
                 get_vector_store(text_chunks, api_key)
                 st.success("Documentos processados com sucesso!")
 
-# --- Lógica do Chat ---
-
-# Inicializa o histórico do chat
+# Lógica do Chat
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Exibe as mensagens do histórico
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Obtém a pergunta do usuário
 if user_question := st.chat_input("Qual é a sua dúvida?"):
-    # Adiciona a pergunta do usuário ao histórico e exibe
     st.session_state.messages.append({"role": "user", "content": user_question})
     with st.chat_message("user"):
         st.markdown(user_question)
 
-    # Verifica se a API e os documentos estão prontos
-    if not api_key:
-        st.warning("Por favor, insira e configure sua chave de API na barra lateral.")
-    elif not os.path.exists("faiss_index"):
+    if not os.path.exists("faiss_index"):
         st.warning("Por favor, processe os documentos na barra lateral primeiro.")
-    else:
-        with st.spinner("Pensando..."):
-            # Carrega o vector store e busca documentos relevantes
-            embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001",
-                google_api_key=api_key # <-- A MESMA CORREÇÃO: Passamos a chave aqui também
-            )
-            new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True) # Permite carregar o índice
-            docs = new_db.similarity_search(user_question)
-            
-            # Cria o contexto a partir dos documentos encontrados
-            context = "\n".join([doc.page_content for doc in docs])
-            
-            # Monta o prompt
-            prompt_completo = f"""
-            Você é um assistente da Dox Brasil. Sua tarefa é responder perguntas sobre nossos processos
-            com base no contexto fornecido. Responda de forma clara, objetiva e em português. Se a resposta não
-            estiver no contexto, diga que você não tem essa informação.
+        st.stop()
 
-            Contexto:
-            {context}
+    with st.spinner("Pensando..."):
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=api_key
+        )
+        new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+        docs = new_db.similarity_search(user_question)
+        context = "\n".join([doc.page_content for doc in docs])
+        
+        model = get_ conversational_chain()
+        # O prompt já está dentro da função, então passamos o contexto e a pergunta
+        prompt_completo = model.prompt_template.format(context=context, question=user_question)
+        response = model.generate_content(prompt_completo)
 
-            Pergunta:
-            {user_question}
-
-            Resposta:
-            """
-
-            # Gera a resposta com o Gemini
-            model = get_conversational_chain()
-            response = model.generate_content(prompt_completo)
-
-            # Adiciona a resposta do bot ao histórico e exibe
-            bot_response = response.text
-            st.session_state.messages.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.markdown(bot_response)
+        bot_response = response.text
+        st.session_state.messages.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.markdown(bot_response)
